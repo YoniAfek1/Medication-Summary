@@ -150,6 +150,7 @@
         <div class="loading" id="loading"></div>
         <div class="error-message" id="error"></div>
         <div id="results"></div>
+        <pre id="rawTextBox" style="white-space: pre-wrap; background: #f4f4f4; border-radius: 5px; padding: 1rem; margin-top: 2rem; max-height: 300px; overflow: auto; display: none;"></pre>
     </div>
 
     <script>
@@ -172,7 +173,7 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    displayResults(data.results);
+                    displayResults(data.results, data.raw_text);
                 } else {
                     showError(data.error || 'An error occurred while processing the PDF');
                 }
@@ -185,38 +186,44 @@
             });
         });
 
-        function displayResults(results) {
+        function displayResults(results, rawText) {
             const resultsDiv = document.getElementById('results');
             resultsDiv.style.display = 'block';
             
             if (!results || Object.keys(results).length === 0) {
                 resultsDiv.innerHTML = '<p class="no-results">No medications detected in the document.</p>';
-                return;
-            }
-
-            const CATEGORY_ORDER = [
-                "NSAIDS, COXI",
-                "Weak opioids",
-                "Strong opioids",
-                "Adjuvants / anti neuropathic pain",
-                "Muscle relaxants"
-            ];
-
-            let html = '';
-            for (const category of CATEGORY_ORDER) {
-                if (results[category]) {
-                    html += `
-                        <div class="category">
-                            <div class="category-title">${category}</div>
-                            <ul class="drug-list">
-                                ${results[category].map(drug => `<li class="drug-item">${drug}</li>`).join('')}
-                            </ul>
-                        </div>
-                    `;
+            } else {
+                const CATEGORY_ORDER = [
+                    "NSAIDS, COXI",
+                    "Weak opioids",
+                    "Strong opioids",
+                    "Adjuvants / anti neuropathic pain",
+                    "Muscle relaxants"
+                ];
+                let html = '';
+                for (const category of CATEGORY_ORDER) {
+                    if (results[category]) {
+                        html += `
+                            <div class="category">
+                                <div class="category-title">${category}</div>
+                                <ul class="drug-list">
+                                    ${results[category].map(drug => `<li class="drug-item">${drug}</li>`).join('')}
+                                </ul>
+                            </div>
+                        `;
+                    }
                 }
+                resultsDiv.innerHTML = html;
             }
-            
-            resultsDiv.innerHTML = html;
+            // Show raw text
+            const rawTextBox = document.getElementById('rawTextBox');
+            if (rawText && rawText.trim().length > 0) {
+                rawTextBox.textContent = rawText;
+                rawTextBox.style.display = 'block';
+            } else {
+                rawTextBox.textContent = '';
+                rawTextBox.style.display = 'none';
+            }
         }
 
         function showError(message) {

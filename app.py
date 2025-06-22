@@ -1,14 +1,18 @@
 import re
 from io import BytesIO
-from flask import Flask, request, send_file, render_template, jsonify
+from flask import Flask, request, jsonify
 from PyPDF2 import PdfReader
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder="public",
+    static_url_path=""
+)
 
-# 1. Your category → list of full entries
+# 1. Category → list of full entries
 DRUG_CATEGORIES = {
     "Weak opioids": [
-        "ROKACET PLUS",
+        "ROKACET - ROKACET PLUS",
         "ZALDIAR",
         "TRAMADEX - TRAMADOL - Tramal",
         "BUTRANS - BUPERNORPHINE"
@@ -18,8 +22,9 @@ DRUG_CATEGORIES = {
         "TARGIN - OXYCODONE",
         "OXYCONTIN – OXYCODONE",
         "OXYCOD SYRUP",
+        "OXYCOD SYR",
         "FENTANYL - fenta- fentadol",
-        "MORPHINE - MCR - M.C.R - MIR - M.I.R"
+        "MORPHINE - MCR - MIR"
     ],
     "Adjuvants / anti neuropathic pain": [
         "LYRICA - PREGABALIN",
@@ -39,73 +44,71 @@ DRUG_CATEGORIES = {
     ]
 }
 
-# 2. Build a synonym → [(category, full_entry), …] map
-SYNONYM_MAP = {}
-for cat, entries in DRUG_CATEGORIES.items():
-    for entry in entries:
-        # split on hyphen to get each "word" that may appear by itself
-        parts = [p.strip() for p in entry.upper().split("-")]
-        for synonym in parts:
-            SYNONYM_MAP.setdefault(synonym, []).append((cat, entry))
+def sanitize(text: str) -> str:
+    return re.sub(r'[^A-Za-z]', ' ', text)
 
-def sanitize(line: str) -> str:
-    """Replace all non-letter characters with spaces."""
-    return re.sub(r'[^A-Za-z]', ' ', line)
+def clean_letters_only(text: str) -> str:
+    return re.sub(r'[^a-z]', '', text.lower())
 
 def find_drugs_in_pdf(pdf_stream):
-    """Find matches of drug names in the PDF, with special logic for NSAIDS, COXI."""
     reader = PdfReader(pdf_stream)
     results = {cat: [] for cat in DRUG_CATEGORIES}
-    
-    # NSAIDS, COXI updated term list
+    raw_text_lines = []
+
     nsaids_terms = [
         "ARCOXIA", "ETORICOXIB", "CELCOX", "CELECOXIB", "IBUPROFEN", "NUROFEN", "COMBODEX", "Advil",
         "Etopan", "Etodalac", "Voltaren", "Abitren", "Diclofenac", "brexin", "indomethacin", "naxin",
         "naproxen", "piroxicam", "point"
     ]
-    nsaids_terms = [t.lower() for t in nsaids_terms]
-    nsaids_found = False
 
-    # Extract all text from the PDF
+    # extract raw text
     full_text = ""
     for page in reader.pages:
-        full_text += (page.extract_text() or "") + "\n"
-    
-    # Sanitize and normalize the full text to lowercase
+        text = page.extract_text() or ""
+        raw_text_lines.append(text)
+        full_text += text + "\n"
+
+    # prepare versions of text
     sanitized_text = sanitize(full_text).lower()
+    cleaned_text = clean_letters_only(full_text)
+    word_list = sanitized_text.split()
+    word_list_clean = [clean_letters_only(w) for w in word_list]
 
-    # Special logic for NSAIDS, COXI
+    # detect NSAIDS
+    found_nsaids = False
     for term in nsaids_terms:
-        pattern = rf'\b{re.escape(term)}\b'
-        if re.search(pattern, sanitized_text):
-            nsaids_found = True
-            break
-    if nsaids_found:
-        results["NSAIDS, COXI"] = ["NSAIDS, COXI"]
-    else:
-        results["NSAIDS, COXI"] = []
+        term_clean = clean_letters_only(term)
+        if len(term_clean) >= 4:
+            if term_clean in cleaned_text:
+                found_nsaids = True
+                break
+        else:
+            if term_clean in word_list_clean:
+                found_nsaids = True
+                break
+    results["NSAIDS, COXI"] = [" "] if found_nsaids else []
 
-    # All other categories as before
-    for category, drug_entries in DRUG_CATEGORIES.items():
+    # detect drug categories
+    for category, entries in DRUG_CATEGORIES.items():
         if category == "NSAIDS, COXI":
             continue
-        for drug_entry in drug_entries:
-            synonyms = [s.strip().lower() for s in re.split(r'[-–]', drug_entry)]
+        for full_entry in entries:
+            synonyms = [s.strip() for s in re.split(r'[-–]', full_entry)]
             for synonym in synonyms:
-                if not synonym:
+                term_clean = clean_letters_only(synonym)
+                if not term_clean:
                     continue
-                if len(synonym) >= 5:
-                    if synonym in sanitized_text:
-                        if drug_entry not in results[category]:
-                            results[category].append(drug_entry)
+                if len(term_clean) >= 4:
+                    if term_clean in cleaned_text:
+                        if full_entry not in results[category]:
+                            results[category].append(full_entry)
                         break
                 else:
-                    pattern = rf'\b{re.escape(synonym)}\b'
-                    if re.search(pattern, sanitized_text):
-                        if drug_entry not in results[category]:
-                            results[category].append(drug_entry)
+                    if term_clean in word_list_clean:
+                        if full_entry not in results[category]:
+                            results[category].append(full_entry)
                         break
-    # Fixed output order
+
     output_order = [
         "NSAIDS, COXI",
         "Weak opioids",
@@ -114,32 +117,31 @@ def find_drugs_in_pdf(pdf_stream):
         "Muscle relaxants"
     ]
     ordered_results = {cat: results[cat] for cat in output_order if results[cat]}
-    return ordered_results
+    raw_text = "\n".join(raw_text_lines)
+    return ordered_results, raw_text
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return app.send_static_file("index.html")
 
 @app.route('/upload', methods=['POST'])
 def upload():
     if 'pdf_file' not in request.files:
         return jsonify({'success': False, 'error': 'No file uploaded'}), 400
-    
+
     file = request.files['pdf_file']
     if not file or not file.filename.lower().endswith('.pdf'):
         return jsonify({'success': False, 'error': 'Invalid file type'}), 400
-    
+
     try:
-        results = find_drugs_in_pdf(file.stream)
+        results, raw_text = find_drugs_in_pdf(file.stream)
         return jsonify({
             'success': True,
-            'results': results
+            'results': results,
+            'raw_text': raw_text
         })
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000) 
+    app.run(host="0.0.0.0", port=5000)
