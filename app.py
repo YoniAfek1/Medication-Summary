@@ -22,6 +22,7 @@ DRUG_CATEGORIES = {
         "TARGIN - OXYCODONE",
         "OXYCONTIN – OXYCODONE",
         "OXYCOD SYRUP",
+        "OXYCOD SYRUP",
         "OXYCOD SYR",
         "FENTANYL - fenta- fentadol",
         "MORPHINE - MCR - MIR"
